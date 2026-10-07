@@ -1,5 +1,4 @@
 import os
-import time
 import uuid
 from flask import Flask, jsonify
 import paho.mqtt.client as mqtt
@@ -7,7 +6,7 @@ import paho.mqtt.client as mqtt
 app = Flask(__name__)
 
 # ============================================================
-# HIVE MQ CONFIG
+# MQTT CONFIG
 # ============================================================
 
 MQTT_BROKER = os.getenv(
@@ -29,16 +28,11 @@ MQTT_PASSWORD = os.getenv(
     ""
 )
 
-STATUS_TOPIC = "home/status"
-
-
-# ============================================================
-# MQTT STATE
-# ============================================================
+LIGHT_TOPIC = "home/light"
 
 mqtt_connected = False
-last_message = None
 last_error = None
+last_publish = None
 
 
 # ============================================================
@@ -58,18 +52,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
         mqtt_connected = True
 
         print("MQTT CONNECTED SUCCESSFULLY", flush=True)
-        print(f"Broker: {MQTT_BROKER}", flush=True)
-        print(f"Port: {MQTT_PORT}", flush=True)
-
-        result, mid = client.subscribe(
-            STATUS_TOPIC,
-            qos=1
-        )
-
-        print(
-            f"SUBSCRIBE RESULT: {result}, MID: {mid}",
-            flush=True
-        )
+        print("========================================", flush=True)
 
     else:
 
@@ -79,8 +62,6 @@ def on_connect(client, userdata, flags, reason_code, properties):
             f"MQTT CONNECTION FAILED: {reason_code}",
             flush=True
         )
-
-    print("========================================", flush=True)
 
 
 def on_disconnect(
@@ -95,22 +76,33 @@ def on_disconnect(
 
     mqtt_connected = False
 
-    print("========================================", flush=True)
     print("MQTT DISCONNECTED", flush=True)
-    print(f"Reason code: {reason_code}", flush=True)
-    print("========================================", flush=True)
+    print(
+        f"Disconnect reason: {reason_code}",
+        flush=True
+    )
+
+
+def on_publish(
+    client,
+    userdata,
+    mid,
+    reason_code=None,
+    properties=None
+):
+
+    print(
+        f"MQTT PUBLISH CALLBACK: mid={mid}",
+        flush=True
+    )
 
 
 def on_message(client, userdata, message):
-
-    global last_message
 
     try:
         payload = message.payload.decode("utf-8")
     except Exception:
         payload = str(message.payload)
-
-    last_message = payload
 
     print("========================================", flush=True)
     print("MQTT MESSAGE RECEIVED", flush=True)
@@ -124,12 +116,12 @@ def on_message(client, userdata, message):
 # ============================================================
 
 CLIENT_ID = (
-    "flask-test-"
+    "flask-command-test-"
     + uuid.uuid4().hex[:10]
 )
 
 print("========================================", flush=True)
-print("STARTING MQTT CONNECTION TEST", flush=True)
+print("STARTING FLASK MQTT COMMAND TEST", flush=True)
 print(f"Client ID: {CLIENT_ID}", flush=True)
 print(f"Broker: {MQTT_BROKER}", flush=True)
 print(f"Port: {MQTT_PORT}", flush=True)
@@ -154,7 +146,6 @@ client.username_pw_set(
     MQTT_PASSWORD
 )
 
-# HiveMQ Cloud TLS
 client.tls_set()
 
 client.reconnect_delay_set(
@@ -164,6 +155,7 @@ client.reconnect_delay_set(
 
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
+client.on_publish = on_publish
 client.on_message = on_message
 
 
@@ -179,11 +171,6 @@ try:
         MQTT_BROKER,
         MQTT_PORT,
         keepalive=60
-    )
-
-    print(
-        "MQTT TCP/TLS CONNECTION CREATED",
-        flush=True
     )
 
     client.loop_start()
@@ -204,21 +191,129 @@ except Exception as error:
 
 
 # ============================================================
-# HEALTH
+# HOME
 # ============================================================
 
 @app.route("/")
 def home():
 
     return jsonify({
-        "application": "HomeIoT",
+        "application": "HomeIoT MQTT Command Test",
         "mqtt_connected": mqtt_connected,
         "broker": MQTT_BROKER,
         "port": MQTT_PORT,
-        "last_message": last_message,
-        "last_error": last_error
+        "last_error": last_error,
+        "last_publish": last_publish
     })
 
+
+# ============================================================
+# TEST LIGHT ON
+# ============================================================
+
+@app.route("/test/light/on")
+def test_light_on():
+
+    global last_publish
+
+    print("========================================", flush=True)
+    print("FLASK LIGHT ON TEST", flush=True)
+
+    if not mqtt_connected:
+
+        print(
+            "MQTT IS NOT CONNECTED",
+            flush=True
+        )
+
+        return jsonify({
+            "success": False,
+            "error": "MQTT is not connected"
+        }), 503
+
+
+    try:
+
+        result = client.publish(
+            LIGHT_TOPIC,
+            "ON",
+            qos=1,
+            retain=False
+        )
+
+        print(
+            f"MQTT PUBLISH RESULT: rc={result.rc}, "
+            f"mid={result.mid}",
+            flush=True
+        )
+
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+
+            last_publish = (
+                f"FAILED rc={result.rc}"
+            )
+
+            return jsonify({
+                "success": False,
+                "error": f"Publish failed: {result.rc}"
+            }), 503
+
+
+        # Wait for Paho to confirm transmission.
+        result.wait_for_publish(
+            timeout=5
+        )
+
+        last_publish = (
+            f"SUCCESS mid={result.mid}"
+        )
+
+        print(
+            "FLASK → HIVEMQ PUBLISH SUCCESS",
+            flush=True
+        )
+
+        print(
+            "Topic: home/light",
+            flush=True
+        )
+
+        print(
+            "Message: ON",
+            flush=True
+        )
+
+        print("========================================", flush=True)
+
+
+        return jsonify({
+            "success": True,
+            "topic": LIGHT_TOPIC,
+            "message": "ON",
+            "message_id": result.mid
+        })
+
+
+    except Exception as error:
+
+        last_publish = (
+            f"ERROR: {error}"
+        )
+
+        print(
+            f"PUBLISH ERROR: {error}",
+            flush=True
+        )
+
+        return jsonify({
+            "success": False,
+            "error": str(error)
+        }), 500
+
+
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.route("/health")
 def health():
@@ -226,7 +321,7 @@ def health():
     return jsonify({
         "status": "ok",
         "mqtt_connected": mqtt_connected,
-        "last_message": last_message,
+        "last_publish": last_publish,
         "last_error": last_error
     })
 
