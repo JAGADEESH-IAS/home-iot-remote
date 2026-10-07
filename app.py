@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import uuid
+import time
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template
@@ -9,7 +10,7 @@ import paho.mqtt.client as mqtt
 
 
 # ============================================================
-# FLASK
+# FLASK APP
 # ============================================================
 
 app = Flask(__name__)
@@ -24,7 +25,9 @@ MQTT_BROKER = os.getenv(
     "bravetawny-af88996b.a02.usw2.aws.hivemq.cloud"
 )
 
-MQTT_PORT = int(os.getenv("MQTT_PORT", "8883"))
+MQTT_PORT = int(
+    os.getenv("MQTT_PORT", "8883")
+)
 
 MQTT_USERNAME = os.getenv(
     "MQTT_USERNAME",
@@ -36,6 +39,10 @@ MQTT_PASSWORD = os.getenv(
     ""
 )
 
+
+# ============================================================
+# MQTT TOPICS
+# ============================================================
 
 STATUS_TOPIC = "home/status"
 
@@ -50,7 +57,8 @@ DEVICE_TOPICS = {
 # SHARED STATE
 # ============================================================
 
-lock = threading.Lock()
+state_lock = threading.Lock()
+
 
 device_state = {
     "light": "OFF",
@@ -58,12 +66,14 @@ device_state = {
     "geyser": "OFF"
 }
 
+
 sensor_state = {
     "temperature": None,
     "humidity": None,
     "gas": "UNKNOWN",
     "gas_raw": 0
 }
+
 
 mqtt_state = {
     "connected": False,
@@ -85,57 +95,58 @@ def log(message):
 
 
 # ============================================================
-# MQTT CALLBACKS
+# MQTT CALLBACK: CONNECT
 # ============================================================
 
-def on_connect(client, userdata, flags, reason_code, properties):
+def on_connect(
+    client,
+    userdata,
+    flags,
+    reason_code,
+    properties
+):
 
+    log("================================================")
     log(
-        f"MQTT CONNECTED CALLBACK: "
-        f"broker={MQTT_BROKER}:{MQTT_PORT}, "
+        "MQTT CONNECTED CALLBACK: "
         f"reason_code={reason_code}"
     )
 
     if reason_code == 0:
 
-        with lock:
+        with state_lock:
             mqtt_state["connected"] = True
             mqtt_state["last_error"] = None
 
-        log("MQTT CONNECTION SUCCESSFUL")
+        result, mid = client.subscribe(
+            STATUS_TOPIC,
+            qos=0
+        )
 
-        try:
-            result, mid = client.subscribe(
-                STATUS_TOPIC,
-                qos=0
-            )
-
-            log(
-                f"MQTT SUBSCRIBE: "
-                f"topic={STATUS_TOPIC}, "
-                f"result={result}, "
-                f"mid={mid}"
-            )
-
-        except Exception as error:
-
-            log(
-                f"MQTT SUBSCRIBE ERROR: {error}"
-            )
+        log(
+            "MQTT SUBSCRIBE: "
+            f"topic={STATUS_TOPIC}, "
+            f"result={result}, "
+            f"mid={mid}"
+        )
 
     else:
 
-        with lock:
+        with state_lock:
             mqtt_state["connected"] = False
-            mqtt_state["last_error"] = (
-                f"Connection refused: {reason_code}"
+            mqtt_state["last_error"] = str(
+                reason_code
             )
 
         log(
-            f"MQTT CONNECTION FAILED: "
-            f"reason_code={reason_code}"
+            "MQTT CONNECTION FAILED: "
+            f"{reason_code}"
         )
 
+
+# ============================================================
+# MQTT CALLBACK: DISCONNECT
+# ============================================================
 
 def on_disconnect(
     client,
@@ -145,17 +156,26 @@ def on_disconnect(
     properties
 ):
 
-    with lock:
+    with state_lock:
         mqtt_state["connected"] = False
-        mqtt_state["last_error"] = (
-            f"Disconnected: {reason_code}"
+        mqtt_state["last_error"] = str(
+            reason_code
         )
 
     log(
-        f"MQTT DISCONNECTED: "
+        "MQTT DISCONNECTED: "
         f"reason_code={reason_code}"
     )
 
+    log(
+        "MQTT network loop will attempt "
+        "automatic reconnection."
+    )
+
+
+# ============================================================
+# MQTT CALLBACK: SUBSCRIBE
+# ============================================================
 
 def on_subscribe(
     client,
@@ -166,11 +186,15 @@ def on_subscribe(
 ):
 
     log(
-        f"MQTT SUBSCRIBE CALLBACK: "
+        "MQTT SUBSCRIBE CALLBACK: "
         f"mid={mid}, "
         f"reason_codes={reason_codes}"
     )
 
+
+# ============================================================
+# MQTT CALLBACK: PUBLISH
+# ============================================================
 
 def on_publish(
     client,
@@ -181,11 +205,15 @@ def on_publish(
 ):
 
     log(
-        f"MQTT PUBLISH CALLBACK: "
+        "MQTT PUBLISH CALLBACK: "
         f"mid={mid}, "
         f"reason_code={reason_code}"
     )
 
+
+# ============================================================
+# MQTT CALLBACK: MESSAGE
+# ============================================================
 
 def on_message(
     client,
@@ -196,18 +224,23 @@ def on_message(
     topic = message.topic
 
     try:
-        payload = message.payload.decode("utf-8")
+
+        payload = message.payload.decode(
+            "utf-8"
+        )
 
     except Exception as error:
 
         log(
-            f"MQTT PAYLOAD DECODE ERROR: {error}"
+            "MQTT PAYLOAD DECODE ERROR: "
+            f"{error}"
         )
 
         return
 
+
     log(
-        f"MQTT MESSAGE RECEIVED: "
+        "MQTT MESSAGE RECEIVED: "
         f"topic={topic}"
     )
 
@@ -215,24 +248,32 @@ def on_message(
         f"MQTT PAYLOAD: {payload}"
     )
 
-    # Store latest MQTT message
-    with lock:
+
+    # If a message arrives, MQTT is clearly alive.
+    with state_lock:
+
+        mqtt_state["connected"] = True
 
         mqtt_state["last_message"] = (
-            datetime.now(timezone.utc).isoformat()
+            datetime.now(
+                timezone.utc
+            ).isoformat()
         )
 
         mqtt_state["last_topic"] = topic
 
         mqtt_state["last_payload"] = payload
 
-    # Only process home/status
+
+    # Only process home/status.
     if topic != STATUS_TOPIC:
         return
+
 
     try:
 
         data = json.loads(payload)
+
 
         devices = data.get(
             "devices",
@@ -244,11 +285,12 @@ def on_message(
             {}
         )
 
-        # -----------------------------
-        # Update appliance states
-        # -----------------------------
 
-        with lock:
+        with state_lock:
+
+            # -------------------------------
+            # DEVICE STATES
+            # -------------------------------
 
             for device in (
                 "light",
@@ -258,170 +300,216 @@ def on_message(
 
                 if device in devices:
 
-                    value = devices[device]
+                    value = str(
+                        devices[device]
+                    ).upper()
 
-                    if value is not None:
+                    if value in ("ON", "OFF"):
 
-                        device_state[device] = (
-                            str(value).upper()
-                        )
+                        device_state[device] = value
 
 
-            # -----------------------------
-            # Update sensor values
-            # -----------------------------
+            # -------------------------------
+            # SENSOR VALUES
+            # -------------------------------
 
-            for sensor in (
-                "temperature",
-                "humidity",
-                "gas",
-                "gas_raw"
-            ):
+            if "temperature" in sensors:
 
-                if sensor in sensors:
+                sensor_state["temperature"] = (
+                    sensors["temperature"]
+                )
 
-                    sensor_state[sensor] = (
-                        sensors[sensor]
-                    )
+
+            if "humidity" in sensors:
+
+                sensor_state["humidity"] = (
+                    sensors["humidity"]
+                )
+
+
+            if "gas" in sensors:
+
+                sensor_state["gas"] = (
+                    sensors["gas"]
+                )
+
+
+            if "gas_raw" in sensors:
+
+                sensor_state["gas_raw"] = (
+                    sensors["gas_raw"]
+                )
+
 
         log(
             "MQTT STATUS UPDATED SUCCESSFULLY"
         )
 
         log(
-            f"TEMPERATURE: "
+            "TEMPERATURE: "
             f"{sensor_state['temperature']}"
         )
 
         log(
-            f"HUMIDITY: "
+            "HUMIDITY: "
             f"{sensor_state['humidity']}"
         )
 
         log(
-            f"GAS: "
+            "GAS: "
             f"{sensor_state['gas']}"
         )
+
 
     except Exception as error:
 
         log(
-            f"MQTT STATUS UPDATE ERROR: {error}"
+            "MQTT STATUS UPDATE ERROR: "
+            f"{error}"
         )
 
 
 # ============================================================
-# MQTT CLIENT
+# CREATE MQTT CLIENT
 # ============================================================
 
-# Unique client ID prevents duplicate-client conflicts
-MQTT_CLIENT_ID = (
+CLIENT_ID = (
     "flask-home-remote-"
     + uuid.uuid4().hex[:12]
 )
 
+
 log(
-    f"MQTT CLIENT ID: {MQTT_CLIENT_ID}"
+    f"MQTT CLIENT ID: {CLIENT_ID}"
 )
 
 
 mqtt_client = mqtt.Client(
-    callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-    client_id=MQTT_CLIENT_ID
+    callback_api_version=
+        mqtt.CallbackAPIVersion.VERSION2,
+    client_id=CLIENT_ID
 )
 
 
-# Username/password
 mqtt_client.username_pw_set(
     MQTT_USERNAME,
     MQTT_PASSWORD
 )
 
 
-# TLS for HiveMQ Cloud port 8883
 mqtt_client.tls_set()
 
 
-# Callbacks
-mqtt_client.on_connect = on_connect
-mqtt_client.on_disconnect = on_disconnect
-mqtt_client.on_subscribe = on_subscribe
-mqtt_client.on_publish = on_publish
-mqtt_client.on_message = on_message
-
-
-# Automatic reconnect delay
 mqtt_client.reconnect_delay_set(
     min_delay=2,
     max_delay=30
 )
 
 
+mqtt_client.on_connect = on_connect
+
+mqtt_client.on_disconnect = on_disconnect
+
+mqtt_client.on_subscribe = on_subscribe
+
+mqtt_client.on_publish = on_publish
+
+mqtt_client.on_message = on_message
+
+
 # ============================================================
-# MQTT STARTUP
+# MQTT CONNECTION THREAD
 # ============================================================
 
-def start_mqtt():
+def mqtt_worker():
 
-    log(
-        "================================================"
-    )
-
-    log(
-        "STARTING MQTT CONNECTION"
-    )
-
+    log("================================================")
+    log("STARTING MQTT CONNECTION")
     log(
         f"Broker: {MQTT_BROKER}"
     )
-
     log(
         f"Port: {MQTT_PORT}"
     )
-
     log(
-        f"Username configured: "
+        "Username configured: "
         f"{bool(MQTT_USERNAME)}"
     )
-
     log(
-        f"Password configured: "
+        "Password configured: "
         f"{bool(MQTT_PASSWORD)}"
     )
+    log("================================================")
 
-    log(
-        "================================================"
-    )
 
-    try:
+    while True:
 
-        mqtt_client.connect(
-            MQTT_BROKER,
-            MQTT_PORT,
-            keepalive=60
-        )
+        try:
 
-        log(
-            "MQTT TCP/TLS CONNECTION CREATED"
-        )
+            if not mqtt_client.is_connected():
 
-        mqtt_client.loop_forever()
+                log(
+                    "MQTT CONNECT ATTEMPT"
+                )
 
-    except Exception as error:
+                try:
 
-        with lock:
+                    mqtt_client.connect(
+                        MQTT_BROKER,
+                        MQTT_PORT,
+                        keepalive=60
+                    )
 
-            mqtt_state["connected"] = False
+                    log(
+                        "MQTT TCP/TLS CONNECTION CREATED"
+                    )
 
-            mqtt_state["last_error"] = str(error)
+                except Exception as error:
 
-        log(
-            f"MQTT CONNECTION ERROR: {error}"
-        )
+                    with state_lock:
+
+                        mqtt_state["connected"] = False
+
+                        mqtt_state["last_error"] = str(
+                            error
+                        )
+
+                    log(
+                        "MQTT CONNECT ERROR: "
+                        f"{error}"
+                    )
+
+                    time.sleep(5)
+
+                    continue
+
+
+            # Run the MQTT network loop.
+            mqtt_client.loop(
+                timeout=1.0
+            )
+
+
+        except Exception as error:
+
+            with state_lock:
+
+                mqtt_state["connected"] = False
+
+                mqtt_state["last_error"] = str(
+                    error
+                )
+
+            log(
+                "MQTT NETWORK ERROR: "
+                f"{error}"
+            )
+
+            time.sleep(3)
 
 
 mqtt_thread = threading.Thread(
-    target=start_mqtt,
+    target=mqtt_worker,
     daemon=True
 )
 
@@ -447,20 +535,27 @@ def index():
 @app.route("/api/status")
 def api_status():
 
-    with lock:
+    with state_lock:
 
         response = {
-            "devices": dict(device_state),
+            "devices": dict(
+                device_state
+            ),
 
-            "sensors": dict(sensor_state),
+            "sensors": dict(
+                sensor_state
+            ),
 
-            "mqtt": dict(mqtt_state),
+            "mqtt": dict(
+                mqtt_state
+            ),
 
             "timestamp":
                 datetime.now(
                     timezone.utc
                 ).isoformat()
         }
+
 
     return jsonify(response)
 
@@ -472,14 +567,18 @@ def api_status():
 @app.route("/api/mqtt")
 def api_mqtt():
 
-    with lock:
+    with state_lock:
 
         response = {
-            "broker": MQTT_BROKER,
 
-            "port": MQTT_PORT,
+            "broker":
+                MQTT_BROKER,
 
-            "username": MQTT_USERNAME,
+            "port":
+                MQTT_PORT,
+
+            "username":
+                MQTT_USERNAME,
 
             "password_configured":
                 bool(MQTT_PASSWORD),
@@ -492,6 +591,7 @@ def api_mqtt():
 
             **dict(mqtt_state)
         }
+
 
     return jsonify(response)
 
@@ -513,16 +613,19 @@ def control_device(
 
     action = action.upper().strip()
 
-    log(
-        "================================================"
-    )
+
+    log("================================================")
 
     log(
-        f"DEVICE CONTROL REQUEST: "
+        "DEVICE CONTROL REQUEST: "
         f"{device} -> {action}"
     )
 
+
+    # --------------------------------------------------------
     # Validate device
+    # --------------------------------------------------------
+
     if device not in DEVICE_TOPICS:
 
         return jsonify({
@@ -531,7 +634,10 @@ def control_device(
         }), 400
 
 
+    # --------------------------------------------------------
     # Validate action
+    # --------------------------------------------------------
+
     if action not in (
         "ON",
         "OFF"
@@ -547,79 +653,126 @@ def control_device(
     topic = DEVICE_TOPICS[device]
 
 
-    # Check MQTT connection
-    if not mqtt_client.is_connected():
-
-        log(
-            "CONTROL ERROR: "
-            "MQTT CLIENT IS NOT CONNECTED"
-        )
-
-        with lock:
-
-            mqtt_state["last_command"] = (
-                f"{device}:{action}"
-            )
-
-            mqtt_state["last_command_result"] = (
-                "MQTT_NOT_CONNECTED"
-            )
-
-        return jsonify({
-            "success": False,
-            "error":
-                "MQTT client is not connected"
-        }), 503
-
-
     try:
 
+        # ----------------------------------------------------
+        # Make sure MQTT is connected.
+        # ----------------------------------------------------
+
+        if not mqtt_client.is_connected():
+
+            log(
+                "MQTT IS NOT CONNECTED."
+            )
+
+            log(
+                "ATTEMPTING IMMEDIATE RECONNECT..."
+            )
+
+            try:
+
+                mqtt_client.reconnect()
+
+                log(
+                    "MQTT RECONNECT SUCCESSFUL"
+                )
+
+            except Exception as error:
+
+                log(
+                    "MQTT RECONNECT FAILED: "
+                    f"{error}"
+                )
+
+                with state_lock:
+
+                    mqtt_state[
+                        "last_command"
+                    ] = f"{device}:{action}"
+
+                    mqtt_state[
+                        "last_command_result"
+                    ] = (
+                        "RECONNECT_FAILED: "
+                        f"{error}"
+                    )
+
+                return jsonify({
+
+                    "success": False,
+
+                    "error":
+                        "MQTT connection unavailable"
+                }), 503
+
+
+        # ----------------------------------------------------
+        # Publish command
+        # ----------------------------------------------------
+
         log(
-            f"MQTT COMMAND PUBLISH: "
-            f"topic={topic}, "
-            f"payload={action}"
+            "MQTT COMMAND PUBLISH: "
+            f"{topic} -> {action}"
         )
 
 
         result = mqtt_client.publish(
             topic=topic,
             payload=action,
-            qos=0,
+            qos=1,
             retain=False
         )
 
 
         log(
-            f"MQTT PUBLISH RESULT: "
+            "MQTT PUBLISH RESULT: "
             f"rc={result.rc}, "
             f"mid={result.mid}"
         )
 
 
-        with lock:
+        with state_lock:
 
-            mqtt_state["last_command"] = (
-                f"{device}:{action}"
+            mqtt_state[
+                "last_command"
+            ] = f"{device}:{action}"
+
+            mqtt_state[
+                "last_command_result"
+            ] = (
+                f"rc={result.rc}, "
+                f"mid={result.mid}"
             )
 
-            mqtt_state["last_command_result"] = (
-                f"rc={result.rc},mid={result.mid}"
-            )
 
+        # ----------------------------------------------------
+        # Check publish result
+        # ----------------------------------------------------
 
         if result.rc != mqtt.MQTT_ERR_SUCCESS:
 
             log(
-                f"MQTT PUBLISH FAILED: "
-                f"rc={result.rc}"
+                "MQTT COMMAND PUBLISH FAILED"
             )
 
+
             return jsonify({
+
                 "success": False,
+
                 "error":
                     f"MQTT publish failed: "
-                    f"{result.rc}"
-            }), 500
+                    f"{result.rc}",
+
+                "device":
+                    device,
+
+                "action":
+                    action,
+
+                "topic":
+                    topic
+            }), 503
 
 
         log(
@@ -631,57 +784,48 @@ def control_device(
 
             "success": True,
 
-            "device": device,
+            "device":
+                device,
 
-            "action": action,
+            "action":
+                action,
 
-            "topic": topic,
+            "topic":
+                topic,
 
-            "message_id": result.mid
+            "message_id":
+                result.mid
         })
 
 
     except Exception as error:
 
         log(
-            f"MQTT COMMAND ERROR: {error}"
+            "MQTT COMMAND ERROR: "
+            f"{error}"
         )
-
-        with lock:
-
-            mqtt_state["last_command"] = (
-                f"{device}:{action}"
-            )
-
-            mqtt_state["last_command_result"] = (
-                f"ERROR: {error}"
-            )
 
 
         return jsonify({
 
             "success": False,
 
-            "error": str(error)
-
+            "error":
+                str(error)
         }), 500
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
 @app.route("/health")
 def health():
 
-    with lock:
+    with state_lock:
 
         connected = (
             mqtt_state["connected"]
-        )
-
-        last_error = (
-            mqtt_state["last_error"]
         )
 
 
@@ -690,28 +834,23 @@ def health():
         "status": "ok",
 
         "mqtt_connected":
-            connected,
-
-        "mqtt_error":
-            last_error
+            connected
     })
 
 
 # ============================================================
-# RUN LOCAL
+# LOCAL DEVELOPMENT
 # ============================================================
 
 if __name__ == "__main__":
 
-    port = int(
-        os.getenv(
-            "PORT",
-            "5000"
-        )
-    )
-
     app.run(
         host="0.0.0.0",
-        port=port,
+        port=int(
+            os.getenv(
+                "PORT",
+                "5000"
+            )
+        ),
         debug=False
     )
