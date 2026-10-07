@@ -38,15 +38,16 @@ MQTT_PASSWORD = os.getenv(
 
 
 # ============================================================
-# MQTT TOPICS
+# TOPICS
 # ============================================================
 
 STATUS_TOPIC = "home/status"
+
 LIGHT_TOPIC = "home/light"
 
 
 # ============================================================
-# MQTT STATE
+# STATE
 # ============================================================
 
 mqtt_connected = False
@@ -67,7 +68,7 @@ def log(message):
 
 
 # ============================================================
-# MQTT CALLBACK: CONNECT
+# MQTT CONNECT
 # ============================================================
 
 def on_connect(
@@ -83,34 +84,16 @@ def on_connect(
 
     log("========================================")
     log("MQTT CONNECT CALLBACK")
-
-    log(
-        f"Reason code: {reason_code}"
-    )
-
+    log(f"Reason code: {reason_code}")
 
     if reason_code == 0:
 
         mqtt_connected = True
-
         last_error = None
 
-        log(
-            "MQTT CONNECTED SUCCESSFULLY"
-        )
-
-        log(
-            f"Broker: {MQTT_BROKER}"
-        )
-
-        log(
-            f"Port: {MQTT_PORT}"
-        )
-
-
-        # ----------------------------------------------------
-        # Subscribe to ESP32 status
-        # ----------------------------------------------------
+        log("MQTT CONNECTED SUCCESSFULLY")
+        log(f"Broker: {MQTT_BROKER}")
+        log(f"Port: {MQTT_PORT}")
 
         result, mid = client.subscribe(
             STATUS_TOPIC,
@@ -118,9 +101,8 @@ def on_connect(
         )
 
         log(
-            "MQTT STATUS SUBSCRIBE: "
-            f"result={result}, "
-            f"mid={mid}"
+            "STATUS SUBSCRIBE RESULT: "
+            f"rc={result}, mid={mid}"
         )
 
     else:
@@ -128,23 +110,19 @@ def on_connect(
         mqtt_connected = False
 
         last_error = (
-            f"Connection failed: {reason_code}"
+            f"MQTT connection failed: "
+            f"{reason_code}"
         )
 
         log(
             "MQTT CONNECTION FAILED"
         )
 
-        log(
-            f"Reason: {reason_code}"
-        )
-
-
     log("========================================")
 
 
 # ============================================================
-# MQTT CALLBACK: DISCONNECT
+# MQTT DISCONNECT
 # ============================================================
 
 def on_disconnect(
@@ -161,24 +139,18 @@ def on_disconnect(
     mqtt_connected = False
 
     last_error = (
-        f"Disconnected: {reason_code}"
+        f"MQTT disconnected: "
+        f"{reason_code}"
     )
 
     log("========================================")
-
-    log(
-        "MQTT DISCONNECTED"
-    )
-
-    log(
-        f"Reason code: {reason_code}"
-    )
-
+    log("MQTT DISCONNECTED")
+    log(f"Reason code: {reason_code}")
     log("========================================")
 
 
 # ============================================================
-# MQTT CALLBACK: SUBSCRIBE
+# MQTT SUBSCRIBE
 # ============================================================
 
 def on_subscribe(
@@ -197,7 +169,7 @@ def on_subscribe(
 
 
 # ============================================================
-# MQTT CALLBACK: PUBLISH
+# MQTT PUBLISH CALLBACK
 # ============================================================
 
 def on_publish(
@@ -216,7 +188,7 @@ def on_publish(
 
 
 # ============================================================
-# MQTT CALLBACK: MESSAGE
+# MQTT MESSAGE
 # ============================================================
 
 def on_message(
@@ -227,6 +199,8 @@ def on_message(
 
     global mqtt_connected
     global last_message
+
+    mqtt_connected = True
 
     try:
 
@@ -241,13 +215,6 @@ def on_message(
         )
 
 
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Receiving a message proves that MQTT is connected.
-    # --------------------------------------------------------
-
-    mqtt_connected = True
-
     last_message = {
         "topic": message.topic,
         "payload": payload
@@ -255,19 +222,13 @@ def on_message(
 
 
     log("========================================")
-
-    log(
-        "MQTT MESSAGE RECEIVED"
-    )
-
+    log("MQTT MESSAGE RECEIVED")
     log(
         f"Topic: {message.topic}"
     )
-
     log(
         f"Payload: {payload}"
     )
-
     log("========================================")
 
 
@@ -282,22 +243,10 @@ CLIENT_ID = (
 
 
 log("========================================")
-
-log(
-    "STARTING FLASK MQTT COMMAND TEST"
-)
-
-log(
-    f"Client ID: {CLIENT_ID}"
-)
-
-log(
-    f"Broker: {MQTT_BROKER}"
-)
-
-log(
-    f"Port: {MQTT_PORT}"
-)
+log("STARTING FLASK MQTT COMMAND TEST")
+log(f"Client ID: {CLIENT_ID}")
+log(f"Broker: {MQTT_BROKER}")
+log(f"Port: {MQTT_PORT}")
 
 log(
     "Username configured: "
@@ -312,10 +261,6 @@ log(
 log("========================================")
 
 
-# ============================================================
-# CREATE CLIENT
-# ============================================================
-
 mqtt_client = mqtt.Client(
     callback_api_version=
         mqtt.CallbackAPIVersion.VERSION2,
@@ -325,7 +270,7 @@ mqtt_client = mqtt.Client(
 
 
 # ============================================================
-# MQTT AUTHENTICATION
+# AUTHENTICATION
 # ============================================================
 
 mqtt_client.username_pw_set(
@@ -342,7 +287,7 @@ mqtt_client.tls_set()
 
 
 # ============================================================
-# AUTOMATIC RECONNECT
+# RECONNECT SETTINGS
 # ============================================================
 
 mqtt_client.reconnect_delay_set(
@@ -352,7 +297,7 @@ mqtt_client.reconnect_delay_set(
 
 
 # ============================================================
-# CALLBACK REGISTRATION
+# CALLBACKS
 # ============================================================
 
 mqtt_client.on_connect = on_connect
@@ -367,7 +312,7 @@ mqtt_client.on_message = on_message
 
 
 # ============================================================
-# CONNECT TO HIVEMQ
+# CONNECT
 # ============================================================
 
 try:
@@ -385,7 +330,7 @@ try:
 
 
     log(
-        "MQTT TCP/TLS CONNECTION CREATED"
+        "MQTT CONNECTION CREATED"
     )
 
 
@@ -412,7 +357,7 @@ except Exception as error:
 
 
 # ============================================================
-# HOME / STATUS
+# HOME
 # ============================================================
 
 @app.route("/")
@@ -470,7 +415,12 @@ def health():
 
 
 # ============================================================
-# TEST: LIGHT ON
+# LIGHT ON TEST
+#
+# IMPORTANT:
+# QoS 0 for this diagnostic test.
+#
+# We deliberately do NOT call wait_for_publish().
 # ============================================================
 
 @app.route(
@@ -482,7 +432,6 @@ def test_light_on():
     global last_publish
     global last_error
 
-
     log("========================================")
 
     log(
@@ -492,141 +441,8 @@ def test_light_on():
 
     try:
 
-        # ----------------------------------------------------
-        # DO NOT block based on mqtt_connected.
-        #
-        # We know MQTT can receive messages, so directly
-        # attempt the publish.
-        # ----------------------------------------------------
-
         log(
-            "ATTEMPTING MQTT PUBLISH..."
-        )
-
-
-        result = mqtt_client.publish(
-
-            topic=LIGHT_TOPIC,
-
-            payload="ON",
-
-            qos=1,
-
-            retain=False
-        )
-
-
-        log(
-            "MQTT PUBLISH RESULT: "
-            f"rc={result.rc}, "
-            f"mid={result.mid}"
-        )
-
-
-        # ----------------------------------------------------
-        # Check Paho return code.
-        # ----------------------------------------------------
-
-        if result.rc != mqtt.MQTT_ERR_SUCCESS:
-
-            last_publish = (
-                f"FAILED rc={result.rc}"
-            )
-
-            last_error = (
-                f"Publish failed: {result.rc}"
-            )
-
-
-            log(
-                "FLASK -> HIVEMQ PUBLISH FAILED"
-            )
-
-
-            return jsonify({
-
-                "success":
-                    False,
-
-                "error":
-                    (
-                        "MQTT publish failed"
-                    ),
-
-                "publish_rc":
-                    result.rc,
-
-                "message_id":
-                    result.mid
-
-            }), 503
-
-
-        # ----------------------------------------------------
-        # Wait for Paho to confirm publication.
-        # ----------------------------------------------------
-
-        try:
-
-            result.wait_for_publish(
-                timeout=5
-            )
-
-        except Exception as wait_error:
-
-            log(
-                "WAIT FOR PUBLISH ERROR: "
-                f"{wait_error}"
-            )
-
-
-        # ----------------------------------------------------
-        # Check final publication state.
-        # ----------------------------------------------------
-
-        if not result.is_published():
-
-            last_publish = (
-                "PUBLISH_TIMEOUT"
-            )
-
-            last_error = (
-                "MQTT publish timeout"
-            )
-
-
-            log(
-                "FLASK -> HIVEMQ PUBLISH TIMEOUT"
-            )
-
-
-            return jsonify({
-
-                "success":
-                    False,
-
-                "error":
-                    "MQTT publish timeout",
-
-                "message_id":
-                    result.mid
-
-            }), 503
-
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
-
-        last_publish = (
-            f"SUCCESS mid={result.mid}"
-        )
-
-        last_error = None
-
-
-        log(
-            "FLASK -> HIVEMQ PUBLISH SUCCESS"
+            "ATTEMPTING MQTT PUBLISH"
         )
 
         log(
@@ -638,7 +454,106 @@ def test_light_on():
         )
 
         log(
-            f"Message ID: {result.mid}"
+            "QoS: 0"
+        )
+
+
+        # ----------------------------------------------------
+        # DIRECT PUBLISH
+        # ----------------------------------------------------
+
+        result = mqtt_client.publish(
+
+            topic=LIGHT_TOPIC,
+
+            payload="ON",
+
+            qos=0,
+
+            retain=False
+        )
+
+
+        log(
+            "MQTT PUBLISH RETURNED: "
+            f"rc={result.rc}, "
+            f"mid={result.mid}"
+        )
+
+
+        # ----------------------------------------------------
+        # Check Paho return code
+        # ----------------------------------------------------
+
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+
+            last_publish = (
+                f"FAILED rc={result.rc}"
+            )
+
+            last_error = (
+                f"Publish failed: "
+                f"{result.rc}"
+            )
+
+
+            log(
+                "PUBLISH FAILED"
+            )
+
+            log("========================================")
+
+
+            return jsonify({
+
+                "success":
+                    False,
+
+                "error":
+                    "MQTT publish failed",
+
+                "publish_rc":
+                    result.rc,
+
+                "message_id":
+                    result.mid
+
+            }), 503
+
+
+        # ----------------------------------------------------
+        # QoS 0 does not wait for PUBACK.
+        #
+        # Give the background MQTT loop a short moment
+        # to transmit the packet.
+        # ----------------------------------------------------
+
+        time.sleep(1)
+
+
+        last_publish = (
+            f"SUCCESS rc={result.rc}, "
+            f"mid={result.mid}"
+        )
+
+        last_error = None
+
+
+        log(
+            "FLASK -> HIVEMQ COMMAND "
+            "QUEUED SUCCESSFULLY"
+        )
+
+        log(
+            "Topic: home/light"
+        )
+
+        log(
+            "Message: ON"
+        )
+
+        log(
+            "QoS: 0"
         )
 
         log("========================================")
@@ -655,9 +570,17 @@ def test_light_on():
             "message":
                 "ON",
 
-            "message_id":
-                result.mid
+            "qos":
+                0,
 
+            "message_id":
+                result.mid,
+
+            "note":
+                (
+                    "QoS 0 publish accepted by "
+                    "the MQTT client"
+                )
         })
 
 
@@ -673,7 +596,7 @@ def test_light_on():
 
 
         log(
-            "FLASK -> HIVEMQ PUBLISH ERROR: "
+            "PUBLISH EXCEPTION: "
             f"{error}"
         )
 
@@ -692,7 +615,7 @@ def test_light_on():
 
 
 # ============================================================
-# TEST: LIGHT OFF
+# LIGHT OFF TEST
 # ============================================================
 
 @app.route(
@@ -704,18 +627,28 @@ def test_light_off():
     global last_publish
     global last_error
 
-
     log("========================================")
 
     log(
         "FLASK LIGHT OFF TEST"
     )
 
-
     try:
 
         log(
-            "ATTEMPTING MQTT PUBLISH..."
+            "ATTEMPTING MQTT PUBLISH"
+        )
+
+        log(
+            "Topic: home/light"
+        )
+
+        log(
+            "Message: OFF"
+        )
+
+        log(
+            "QoS: 0"
         )
 
 
@@ -725,14 +658,14 @@ def test_light_off():
 
             payload="OFF",
 
-            qos=1,
+            qos=0,
 
             retain=False
         )
 
 
         log(
-            "MQTT PUBLISH RESULT: "
+            "MQTT PUBLISH RETURNED: "
             f"rc={result.rc}, "
             f"mid={result.mid}"
         )
@@ -745,7 +678,8 @@ def test_light_off():
             )
 
             last_error = (
-                f"Publish failed: {result.rc}"
+                f"Publish failed: "
+                f"{result.rc}"
             )
 
 
@@ -766,54 +700,20 @@ def test_light_off():
             }), 503
 
 
-        try:
-
-            result.wait_for_publish(
-                timeout=5
-            )
-
-        except Exception as wait_error:
-
-            log(
-                "WAIT FOR PUBLISH ERROR: "
-                f"{wait_error}"
-            )
-
-
-        if not result.is_published():
-
-            last_publish = (
-                "PUBLISH_TIMEOUT"
-            )
-
-            last_error = (
-                "MQTT publish timeout"
-            )
-
-
-            return jsonify({
-
-                "success":
-                    False,
-
-                "error":
-                    "MQTT publish timeout",
-
-                "message_id":
-                    result.mid
-
-            }), 503
+        time.sleep(1)
 
 
         last_publish = (
-            f"SUCCESS mid={result.mid}"
+            f"SUCCESS rc={result.rc}, "
+            f"mid={result.mid}"
         )
 
         last_error = None
 
 
         log(
-            "FLASK -> HIVEMQ PUBLISH SUCCESS"
+            "FLASK -> HIVEMQ COMMAND "
+            "QUEUED SUCCESSFULLY"
         )
 
         log(
@@ -825,7 +725,7 @@ def test_light_off():
         )
 
         log(
-            f"Message ID: {result.mid}"
+            "QoS: 0"
         )
 
         log("========================================")
@@ -842,9 +742,17 @@ def test_light_off():
             "message":
                 "OFF",
 
-            "message_id":
-                result.mid
+            "qos":
+                0,
 
+            "message_id":
+                result.mid,
+
+            "note":
+                (
+                    "QoS 0 publish accepted by "
+                    "the MQTT client"
+                )
         })
 
 
@@ -860,7 +768,7 @@ def test_light_off():
 
 
         log(
-            "FLASK -> HIVEMQ PUBLISH ERROR: "
+            "PUBLISH EXCEPTION: "
             f"{error}"
         )
 
@@ -877,7 +785,7 @@ def test_light_off():
 
 
 # ============================================================
-# RUN FLASK
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
