@@ -10,13 +10,14 @@ const state = {
         humidity: 0,
         gas: "NORMAL",
         gas_raw: 0
+    },
+
+    mqtt: {
+        connected: false
     }
 };
 
 
-// ===============================
-// GET LATEST STATUS FROM FLASK
-// ===============================
 async function refreshStatus() {
     try {
         const response = await fetch(
@@ -40,7 +41,6 @@ async function refreshStatus() {
 
         console.log("Fresh status received:", data);
 
-        // Update device states
         if (data.devices) {
             state.devices = {
                 ...state.devices,
@@ -48,7 +48,6 @@ async function refreshStatus() {
             };
         }
 
-        // Update sensor values
         if (data.sensors) {
             state.sensors = {
                 ...state.sensors,
@@ -56,22 +55,32 @@ async function refreshStatus() {
             };
         }
 
+        if (data.mqtt) {
+            state.mqtt = {
+                ...state.mqtt,
+                ...data.mqtt
+            };
+        }
+
         updateDashboard();
 
     } catch (error) {
-        console.error("Status refresh error:", error);
+        console.error(
+            "Status refresh error:",
+            error
+        );
+
+        state.mqtt.connected = false;
+        updateMQTTStatus();
     }
 }
 
 
-// ===============================
-// UPDATE DASHBOARD
-// ===============================
 function updateDashboard() {
 
-    // -------------------------------
-    // TEMPERATURE
-    // -------------------------------
+    updateMQTTStatus();
+
+
     const temperatureElement =
         document.getElementById("temperature");
 
@@ -86,9 +95,6 @@ function updateDashboard() {
     }
 
 
-    // -------------------------------
-    // HUMIDITY
-    // -------------------------------
     const humidityElement =
         document.getElementById("humidity");
 
@@ -103,9 +109,6 @@ function updateDashboard() {
     }
 
 
-    // -------------------------------
-    // GAS
-    // -------------------------------
     const gasElement =
         document.getElementById("gas");
 
@@ -115,9 +118,6 @@ function updateDashboard() {
     }
 
 
-    // -------------------------------
-    // GAS RAW VALUE
-    // -------------------------------
     const gasRawElement =
         document.getElementById("gas-raw");
 
@@ -127,9 +127,6 @@ function updateDashboard() {
     }
 
 
-    // -------------------------------
-    // DEVICE STATES
-    // -------------------------------
     updateDevice(
         "light",
         state.devices.light
@@ -147,27 +144,84 @@ function updateDashboard() {
 }
 
 
-// ===============================
-// UPDATE DEVICE DISPLAY
-// ===============================
+function updateMQTTStatus() {
+
+    const connected =
+        state.mqtt.connected === true;
+
+
+    /*
+     * Try several possible IDs so the existing
+     * dashboard HTML does not need to be changed.
+     */
+
+    const possibleElements = [
+        document.getElementById("mqtt-status"),
+        document.getElementById("mqtt-badge"),
+        document.getElementById("mqtt-indicator"),
+        document.getElementById("mqtt-connection")
+    ];
+
+
+    possibleElements.forEach(element => {
+
+        if (!element) {
+            return;
+        }
+
+        element.textContent =
+            connected
+                ? "MQTT Connected"
+                : "MQTT Offline";
+
+        element.classList.toggle(
+            "online",
+            connected
+        );
+
+        element.classList.toggle(
+            "offline",
+            !connected
+        );
+
+        element.classList.toggle(
+            "connected",
+            connected
+        );
+
+        element.classList.toggle(
+            "disconnected",
+            !connected
+        );
+    });
+
+
+    console.log(
+        "MQTT dashboard status:",
+        connected
+            ? "CONNECTED"
+            : "OFFLINE"
+    );
+}
+
+
 function updateDevice(device, status) {
 
     const value =
         String(status || "OFF").toUpperCase();
 
 
-    // Device status text
     const statusElement =
         document.getElementById(
             device + "-status"
         );
 
     if (statusElement) {
-        statusElement.textContent = value;
+        statusElement.textContent =
+            value;
     }
 
 
-    // Device card
     const card =
         document.getElementById(
             device + "-card"
@@ -181,7 +235,6 @@ function updateDevice(device, status) {
     }
 
 
-    // Optional ON/OFF indicators
     const indicator =
         document.getElementById(
             device + "-indicator"
@@ -189,18 +242,14 @@ function updateDevice(device, status) {
 
     if (indicator) {
         indicator.textContent =
-            value === "ON" ? "ON" : "OFF";
+            value === "ON"
+                ? "ON"
+                : "OFF";
     }
 }
 
 
-// ===============================
-// CONTROL LIGHT / FAN / GEYSER
-// ===============================
-async function controlDevice(
-    device,
-    action
-) {
+async function controlDevice(device, action) {
 
     try {
 
@@ -229,6 +278,7 @@ async function controlDevice(
         const result =
             await response.json();
 
+
         console.log(
             "Command response:",
             result
@@ -236,6 +286,7 @@ async function controlDevice(
 
 
         if (!response.ok) {
+
             throw new Error(
                 result.error ||
                 "Command failed"
@@ -243,14 +294,13 @@ async function controlDevice(
         }
 
 
-        // Show requested state immediately
         state.devices[device] =
             action.toUpperCase();
+
 
         updateDashboard();
 
 
-        // Ask Flask for actual ESP32 status
         setTimeout(
             refreshStatus,
             1000
@@ -263,20 +313,15 @@ async function controlDevice(
             "Control error:",
             error
         );
-
     }
 }
 
 
-// ===============================
-// INITIAL LOAD
-// ===============================
+/* Initial status */
 refreshStatus();
 
 
-// ===============================
-// REFRESH EVERY 5 SECONDS
-// ===============================
+/* Refresh every 5 seconds */
 setInterval(
     refreshStatus,
     5000
