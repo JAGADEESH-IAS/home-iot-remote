@@ -1,8 +1,10 @@
 import os
-import time
+import json
 import uuid
+import time
+import threading
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template
 import paho.mqtt.client as mqtt
 
 
@@ -10,7 +12,7 @@ app = Flask(__name__)
 
 
 # ============================================================
-# HIVEMQ CONFIGURATION
+# MQTT CONFIGURATION
 # ============================================================
 
 MQTT_BROKER = os.getenv(
@@ -44,23 +46,47 @@ STATUS_TOPIC = "home/status"
 
 
 # ============================================================
-# DEBUG STATE
+# DEVICE STATE
 # ============================================================
 
-last_error = None
-last_message = None
-last_publish = None
+device_states = {
+    "light": "OFF",
+    "fan": "OFF",
+    "geyser": "OFF"
+}
 
+
+sensor_data = {
+    "temperature": None,
+    "humidity": None,
+    "gas": "NORMAL",
+    "gas_raw": None
+}
+
+
+mqtt_connected = False
+
+last_error = None
+
+last_status_time = None
+
+
+state_lock = threading.Lock()
+
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 def log(message):
     print(message, flush=True)
 
 
 # ============================================================
-# STATUS CLIENT CALLBACKS
+# MQTT CALLBACKS
 # ============================================================
 
-def status_on_connect(
+def on_connect(
     client,
     userdata,
     flags,
@@ -68,23 +94,27 @@ def status_on_connect(
     properties
 ):
 
+    global mqtt_connected
     global last_error
 
     log("")
     log("========================================")
-    log("STATUS CLIENT CONNECT CALLBACK")
+    log("MQTT CONNECT CALLBACK")
     log(f"Reason code: {reason_code}")
-    log(f"Reason type: {type(reason_code)}")
+    log("========================================")
 
     if reason_code == 0:
 
+        mqtt_connected = True
         last_error = None
 
-        log("STATUS CLIENT CONNECTED")
+        log("MQTT CONNECTED SUCCESSFULLY")
+        log(f"Broker: {MQTT_BROKER}")
+        log(f"Port: {MQTT_PORT}")
 
         result, mid = client.subscribe(
             STATUS_TOPIC,
-            qos=1
+            qos=0
         )
 
         log(
@@ -94,17 +124,17 @@ def status_on_connect(
 
     else:
 
+        mqtt_connected = False
+
         last_error = (
-            f"Status connection failed: "
+            f"MQTT connection failed: "
             f"{reason_code}"
         )
 
-        log("STATUS CONNECTION FAILED")
-
-    log("========================================")
+        log("MQTT CONNECTION FAILED")
 
 
-def status_on_disconnect(
+def on_disconnect(
     client,
     userdata,
     disconnect_flags,
@@ -112,69 +142,121 @@ def status_on_disconnect(
     properties
 ):
 
+    global mqtt_connected
+
+    mqtt_connected = False
+
     log("")
     log("========================================")
-    log("STATUS CLIENT DISCONNECTED")
+    log("MQTT DISCONNECTED")
     log(f"Reason code: {reason_code}")
     log("========================================")
 
 
-def status_on_subscribe(
-    client,
-    userdata,
-    mid,
-    reason_codes,
-    properties=None
-):
-
-    log(
-        f"STATUS SUBSCRIBE CALLBACK: "
-        f"mid={mid}, "
-        f"reason_codes={reason_codes}"
-    )
-
-
-def status_on_message(
+def on_message(
     client,
     userdata,
     message
 ):
 
-    global last_message
+    global last_status_time
+
+    if message.topic != STATUS_TOPIC:
+        return
 
     try:
+
         payload = message.payload.decode(
             "utf-8"
         )
-    except Exception:
-        payload = str(message.payload)
 
-    last_message = {
-        "topic": message.topic,
-        "payload": payload
-    }
+        data = json.loads(payload)
 
-    log("")
-    log("========================================")
-    log("STATUS MESSAGE RECEIVED")
-    log(f"Topic: {message.topic}")
-    log(f"Payload: {payload}")
-    log("========================================")
+        log("")
+        log("========================================")
+        log("MQTT STATUS RECEIVED")
+        log(f"Topic: {message.topic}")
+        log(f"Payload: {payload}")
+        log("========================================")
+
+        with state_lock:
+
+            # ------------------------------------------------
+            # DEVICE STATES
+            # ------------------------------------------------
+
+            devices = data.get(
+                "devices",
+                {}
+            )
+
+            if "light" in devices:
+
+                device_states["light"] = str(
+                    devices["light"]
+                ).upper()
+
+            if "fan" in devices:
+
+                device_states["fan"] = str(
+                    devices["fan"]
+                ).upper()
+
+            if "geyser" in devices:
+
+                device_states["geyser"] = str(
+                    devices["geyser"]
+                ).upper()
+
+            # ------------------------------------------------
+            # SENSOR DATA
+            # ------------------------------------------------
+
+            sensors = data.get(
+                "sensors",
+                {}
+            )
+
+            sensor_data["temperature"] = (
+                sensors.get("temperature")
+            )
+
+            sensor_data["humidity"] = (
+                sensors.get("humidity")
+            )
+
+            sensor_data["gas"] = sensors.get(
+                "gas",
+                "NORMAL"
+            )
+
+            sensor_data["gas_raw"] = (
+                sensors.get("gas_raw")
+            )
+
+            last_status_time = time.time()
+
+    except Exception as error:
+
+        log("")
+        log("MQTT STATUS PARSE ERROR")
+        log(str(error))
 
 
 # ============================================================
-# STATUS MQTT CLIENT
+# CREATE MQTT CLIENT
 # ============================================================
 
-status_client_id = (
-    "flask-status-" +
+CLIENT_ID = (
+    "flask-dashboard-" +
     uuid.uuid4().hex[:12]
 )
 
+
 log("")
 log("========================================")
-log("STARTING STATUS MQTT CLIENT")
-log(f"Client ID: {status_client_id}")
+log("STARTING HOME IOT FLASK APPLICATION")
+log(f"Client ID: {CLIENT_ID}")
 log(f"Broker: {MQTT_BROKER}")
 log(f"Port: {MQTT_PORT}")
 log(
@@ -188,650 +270,325 @@ log(
 log("========================================")
 
 
-status_client = mqtt.Client(
+mqtt_client = mqtt.Client(
     callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-    client_id=status_client_id
+    client_id=CLIENT_ID
 )
 
-status_client.username_pw_set(
+
+mqtt_client.username_pw_set(
     MQTT_USERNAME,
     MQTT_PASSWORD
 )
 
-status_client.tls_set()
 
-status_client.on_connect = status_on_connect
-status_client.on_disconnect = status_on_disconnect
-status_client.on_subscribe = status_on_subscribe
-status_client.on_message = status_on_message
+mqtt_client.tls_set()
 
+
+mqtt_client.reconnect_delay_set(
+    min_delay=2,
+    max_delay=30
+)
+
+
+mqtt_client.on_connect = on_connect
+
+mqtt_client.on_disconnect = on_disconnect
+
+mqtt_client.on_message = on_message
+
+
+# ============================================================
+# MQTT CONNECTION
+# ============================================================
 
 try:
 
-    status_client.connect(
+    log("CONNECTING TO HIVEMQ...")
+
+    mqtt_client.connect(
         MQTT_BROKER,
         MQTT_PORT,
         keepalive=60
     )
 
-    status_client.loop_start()
+    mqtt_client.loop_start()
 
-    log("STATUS CLIENT STARTED")
+    log("MQTT NETWORK LOOP STARTED")
 
 except Exception as error:
 
+    mqtt_connected = False
+
     last_error = str(error)
 
-    log("STATUS CLIENT ERROR")
+    log("MQTT STARTUP ERROR")
     log(str(error))
 
 
 # ============================================================
-# COMMAND CLIENT CALLBACKS
-# ============================================================
-
-def command_on_connect(
-    client,
-    userdata,
-    flags,
-    reason_code,
-    properties
-):
-
-    log("")
-    log("----------------------------------------")
-    log("COMMAND CLIENT CONNECT CALLBACK")
-    log(f"Reason code: {reason_code}")
-    log(f"Reason type: {type(reason_code)}")
-
-    if reason_code == 0:
-        log("COMMAND CLIENT CONNECTED TO HIVEMQ")
-    else:
-        log("COMMAND CLIENT CONNECTION FAILED")
-
-    log("----------------------------------------")
-
-
-def command_on_disconnect(
-    client,
-    userdata,
-    disconnect_flags,
-    reason_code,
-    properties
-):
-
-    log("")
-    log("----------------------------------------")
-    log("COMMAND CLIENT DISCONNECTED")
-    log(f"Reason code: {reason_code}")
-    log("----------------------------------------")
-
-
-def command_on_publish(
-    client,
-    userdata,
-    mid,
-    reason_code=None,
-    properties=None
-):
-
-    log("")
-    log("----------------------------------------")
-    log("COMMAND PUBLISH CALLBACK")
-    log(f"Message ID: {mid}")
-    log(f"Reason code: {reason_code}")
-    log("----------------------------------------")
-
-
-# ============================================================
-# COMMAND PUBLISH TEST
+# PUBLISH COMMAND
 # ============================================================
 
 def publish_command(
     topic,
-    payload,
-    qos
+    payload
 ):
 
     global last_error
-    global last_publish
-
-    client_id = (
-        "flask-command-" +
-        uuid.uuid4().hex[:12]
-    )
-
-    client = None
 
     log("")
-    log("")
-    log("########################################")
-    log("STARTING COMMAND TEST")
-    log(f"Client ID: {client_id}")
-    log(f"Broker: {MQTT_BROKER}")
-    log(f"Port: {MQTT_PORT}")
+    log("========================================")
+    log("DEVICE COMMAND")
     log(f"Topic: {topic}")
     log(f"Payload: {payload}")
-    log(f"QoS: {qos}")
-    log("########################################")
+    log("QoS: 0")
+    log("========================================")
 
     try:
 
         # ----------------------------------------------------
-        # CREATE CLIENT
+        # IMPORTANT:
+        # QoS 0 is the method we just proved works.
         # ----------------------------------------------------
 
-        client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=client_id
-        )
-
-        client.username_pw_set(
-            MQTT_USERNAME,
-            MQTT_PASSWORD
-        )
-
-        client.tls_set()
-
-        client.on_connect = command_on_connect
-        client.on_disconnect = command_on_disconnect
-        client.on_publish = command_on_publish
-
-        # ----------------------------------------------------
-        # CONNECT
-        # ----------------------------------------------------
-
-        log("")
-        log("CONNECTING TO HIVEMQ...")
-
-        connect_result = client.connect(
-            MQTT_BROKER,
-            MQTT_PORT,
-            keepalive=60
-        )
-
-        log(
-            f"CONNECT RETURNED: "
-            f"{connect_result}"
-        )
-
-        # ----------------------------------------------------
-        # START NETWORK LOOP
-        # ----------------------------------------------------
-
-        client.loop_start()
-
-        log("NETWORK LOOP STARTED")
-
-        # ----------------------------------------------------
-        # WAIT FOR CONNACK
-        # ----------------------------------------------------
-
-        connected = False
-
-        for i in range(40):
-
-            time.sleep(0.25)
-
-            if client.is_connected():
-
-                connected = True
-
-                log(
-                    "########################################"
-                )
-
-                log(
-                    "MQTT CONNECTION CONFIRMED"
-                )
-
-                log(
-                    f"After {(i + 1) * 0.25:.2f} seconds"
-                )
-
-                log(
-                    "########################################"
-                )
-
-                break
-
-        if not connected:
-
-            last_error = (
-                "MQTT client never became connected."
-            )
-
-            log("")
-            log("MQTT CONNECTION FAILED")
-
-            return {
-                "success": False,
-                "stage": "connect",
-                "error": last_error
-            }
-
-        # ----------------------------------------------------
-        # PUBLISH
-        # ----------------------------------------------------
-
-        log("")
-        log("PUBLISHING NOW...")
-
-        info = client.publish(
+        result = mqtt_client.publish(
             topic=topic,
             payload=payload,
-            qos=qos,
+            qos=0,
             retain=False
         )
 
         log(
-            f"PUBLISH RETURN CODE: "
-            f"{info.rc}"
+            f"MQTT PUBLISH RESULT: "
+            f"rc={result.rc}, "
+            f"mid={result.mid}"
         )
 
-        log(
-            f"PUBLISH MESSAGE ID: "
-            f"{info.mid}"
-        )
-
-        # ----------------------------------------------------
-        # CHECK IMMEDIATE ERROR
-        # ----------------------------------------------------
-
-        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
 
             last_error = (
-                f"Publish returned error "
-                f"code {info.rc}"
-            )
-
-            log("PUBLISH FAILED IMMEDIATELY")
-
-            return {
-                "success": False,
-                "stage": "publish",
-                "error": last_error,
-                "rc": info.rc,
-                "message_id": info.mid
-            }
-
-        # ----------------------------------------------------
-        # QOS 0
-        # ----------------------------------------------------
-
-        if qos == 0:
-
-            log("")
-            log(
-                "QoS 0 selected."
+                f"MQTT publish failed: "
+                f"rc={result.rc}"
             )
 
             log(
-                "Waiting 3 seconds for "
-                "network loop to transmit..."
+                f"MQTT PUBLISH FAILED: "
+                f"{last_error}"
             )
 
-            time.sleep(3)
-
-            log(
-                "QoS 0 transmission window complete."
-            )
-
-            last_publish = {
-                "topic": topic,
-                "payload": payload,
-                "qos": 0,
-                "message_id": info.mid
-            }
-
-            return {
-                "success": True,
-                "stage": "qos0_publish",
-                "topic": topic,
-                "message": payload,
-                "qos": 0,
-                "message_id": info.mid,
-                "note": (
-                    "Paho accepted the QoS 0 "
-                    "publication."
-                )
-            }
+            return False
 
         # ----------------------------------------------------
-        # QOS 1
+        # Give the MQTT network loop a short time to transmit.
         # ----------------------------------------------------
 
-        log("")
-        log(
-            "QoS 1 selected."
-        )
+        time.sleep(0.5)
 
-        log(
-            "Waiting up to 10 seconds..."
-        )
+        log("MQTT COMMAND QUEUED FOR TRANSMISSION")
 
-        try:
+        last_error = None
 
-            info.wait_for_publish(
-                timeout=10
-            )
-
-        except Exception as wait_error:
-
-            log(
-                f"wait_for_publish exception: "
-                f"{wait_error}"
-            )
-
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # CHECK is_published()
-        # ----------------------------------------------------
-
-        published = info.is_published()
-
-        log("")
-        log(
-            f"is_published(): "
-            f"{published}"
-        )
-
-        if published:
-
-            log("")
-            log(
-                "########################################"
-            )
-
-            log(
-                "QOS 1 PUBLISH COMPLETED"
-            )
-
-            log(
-                "########################################"
-            )
-
-            last_error = None
-
-            last_publish = {
-                "topic": topic,
-                "payload": payload,
-                "qos": 1,
-                "message_id": info.mid,
-                "published": True
-            }
-
-            return {
-                "success": True,
-                "stage": "qos1_publish",
-                "topic": topic,
-                "message": payload,
-                "qos": 1,
-                "message_id": info.mid,
-                "published": True
-            }
-
-        # ----------------------------------------------------
-        # QOS 1 FAILED
-        # ----------------------------------------------------
-
-        last_error = (
-            "Paho did not mark the QoS 1 "
-            "message as published."
-        )
-
-        log("")
-        log(
-            "########################################"
-        )
-        log(
-            "QOS 1 PUBLISH NOT COMPLETED"
-        )
-        log(
-            "########################################"
-        )
-
-        return {
-            "success": False,
-            "stage": "qos1_publish",
-            "error": last_error,
-            "message_id": info.mid,
-            "published": False
-        }
+        return True
 
     except Exception as error:
 
         last_error = str(error)
 
-        log("")
-        log("########################################")
-        log("COMMAND EXCEPTION")
+        log("MQTT COMMAND EXCEPTION")
         log(str(error))
-        log("########################################")
 
-        return {
-            "success": False,
-            "stage": "exception",
-            "error": str(error)
-        }
-
-    finally:
-
-        if client is not None:
-
-            try:
-                client.loop_stop()
-            except Exception:
-                pass
-
-            try:
-                client.disconnect()
-            except Exception:
-                pass
-
-            log(
-                "COMMAND CLIENT CLOSED"
-            )
+        return False
 
 
 # ============================================================
-# HOME
+# DASHBOARD
 # ============================================================
 
 @app.route("/")
-def home():
+def dashboard():
+
+    return render_template(
+        "index.html"
+    )
+
+
+# ============================================================
+# API STATUS
+# ============================================================
+
+@app.route("/api/status")
+def api_status():
+
+    with state_lock:
+
+        status = {
+            "mqtt": {
+                "connected": mqtt_connected
+            },
+
+            "devices": {
+                "light": device_states["light"],
+                "fan": device_states["fan"],
+                "geyser": device_states["geyser"]
+            },
+
+            "sensors": {
+                "temperature": sensor_data["temperature"],
+                "humidity": sensor_data["humidity"],
+                "gas": sensor_data["gas"],
+                "gas_raw": sensor_data["gas_raw"]
+            },
+
+            "last_status_received": (
+                last_status_time
+            ),
+
+            "last_error": last_error
+        }
+
+    return jsonify(status)
+
+
+# ============================================================
+# DEVICE CONTROL
+# ============================================================
+
+@app.route(
+    "/api/device/<device>/<action>",
+    methods=["POST"]
+)
+def control_device(
+    device,
+    action
+):
+
+    device = device.lower()
+    action = action.upper()
+
+    log("")
+    log("========================================")
+    log("DEVICE CONTROL REQUEST")
+    log(f"Device: {device}")
+    log(f"Action: {action}")
+    log("========================================")
+
+    # --------------------------------------------------------
+    # Validate device
+    # --------------------------------------------------------
+
+    topics = {
+        "light": LIGHT_TOPIC,
+        "fan": FAN_TOPIC,
+        "geyser": GEYSER_TOPIC
+    }
+
+    if device not in topics:
+
+        return jsonify({
+            "success": False,
+            "error": "Unknown device"
+        }), 400
+
+    # --------------------------------------------------------
+    # Validate action
+    # --------------------------------------------------------
+
+    if action not in ["ON", "OFF"]:
+
+        return jsonify({
+            "success": False,
+            "error": "Invalid action"
+        }), 400
+
+    # --------------------------------------------------------
+    # Check MQTT connection
+    # --------------------------------------------------------
 
     try:
-        connected = status_client.is_connected()
+
+        connected_now = (
+            mqtt_client.is_connected()
+        )
+
     except Exception:
-        connected = False
+
+        connected_now = False
+
+    if not connected_now:
+
+        log(
+            "MQTT CLIENT IS NOT CONNECTED"
+        )
+
+        return jsonify({
+            "success": False,
+            "error": "MQTT is not connected"
+        }), 503
+
+    # --------------------------------------------------------
+    # Publish
+    # --------------------------------------------------------
+
+    success = publish_command(
+        topics[device],
+        action
+    )
+
+    if not success:
+
+        return jsonify({
+            "success": False,
+            "error": last_error or "MQTT publish failed"
+        }), 503
+
+    # --------------------------------------------------------
+    # Do not pretend the physical device changed yet.
+    #
+    # ESP32 will report the real state through
+    # home/status.
+    # --------------------------------------------------------
+
+    log(
+        "COMMAND SENT TO MQTT"
+    )
 
     return jsonify({
-        "application": "HomeIoT MQTT Diagnostic",
-        "broker": MQTT_BROKER,
-        "port": MQTT_PORT,
-        "status_mqtt_connected": connected,
-        "last_error": last_error,
-        "last_message": last_message,
-        "last_publish": last_publish
+        "success": True,
+        "device": device,
+        "action": action,
+        "topic": topics[device],
+        "qos": 0,
+        "message": "Command published successfully"
     })
 
 
 # ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.route("/health")
 def health():
 
     try:
-        connected = status_client.is_connected()
+
+        connected = (
+            mqtt_client.is_connected()
+        )
+
     except Exception:
+
         connected = False
 
     return jsonify({
         "status": "ok",
-        "status_mqtt_connected": connected,
-        "last_error": last_error,
-        "last_message": last_message,
-        "last_publish": last_publish
+        "mqtt_connected": connected,
+        "last_error": last_error
     })
 
 
 # ============================================================
-# LIGHT ON - QOS 0
-# ============================================================
-
-@app.route("/test/light/on", methods=["GET"])
-def light_on():
-
-    result = publish_command(
-        LIGHT_TOPIC,
-        "ON",
-        0
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# LIGHT OFF - QOS 0
-# ============================================================
-
-@app.route("/test/light/off", methods=["GET"])
-def light_off():
-
-    result = publish_command(
-        LIGHT_TOPIC,
-        "OFF",
-        0
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# LIGHT ON - QOS 1
-# ============================================================
-
-@app.route("/test/light/on-qos1", methods=["GET"])
-def light_on_qos1():
-
-    result = publish_command(
-        LIGHT_TOPIC,
-        "ON",
-        1
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# LIGHT OFF - QOS 1
-# ============================================================
-
-@app.route("/test/light/off-qos1", methods=["GET"])
-def light_off_qos1():
-
-    result = publish_command(
-        LIGHT_TOPIC,
-        "OFF",
-        1
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# FAN ON
-# ============================================================
-
-@app.route("/test/fan/on", methods=["GET"])
-def fan_on():
-
-    result = publish_command(
-        FAN_TOPIC,
-        "ON",
-        0
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# FAN OFF
-# ============================================================
-
-@app.route("/test/fan/off", methods=["GET"])
-def fan_off():
-
-    result = publish_command(
-        FAN_TOPIC,
-        "OFF",
-        0
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# GEYSER ON
-# ============================================================
-
-@app.route("/test/geyser/on", methods=["GET"])
-def geyser_on():
-
-    result = publish_command(
-        GEYSER_TOPIC,
-        "ON",
-        0
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# GEYSER OFF
-# ============================================================
-
-@app.route("/test/geyser/off", methods=["GET"])
-def geyser_off():
-
-    result = publish_command(
-        GEYSER_TOPIC,
-        "OFF",
-        0
-    )
-
-    if result.get("success"):
-        return jsonify(result), 200
-
-    return jsonify(result), 503
-
-
-# ============================================================
-# START FLASK
+# START LOCAL SERVER
 # ============================================================
 
 if __name__ == "__main__":
