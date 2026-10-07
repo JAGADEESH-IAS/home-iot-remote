@@ -1,44 +1,283 @@
-let lastData=null;
-function getElement(id){return document.getElementById(id);}
-function showMessage(t,type=""){const e=getElement("message");if(e){e.textContent=t;e.className="message "+type;}}
-function updateMQTT(data){
- const b=getElement("mqttBadge"),t=getElement("mqttText");
- if(!data.mqtt)return;
- if(data.mqtt.connected){b.textContent="● MQTT Connected";b.classList.remove("offline");b.classList.add("online");t.textContent="Connected";}
- else{b.textContent="● MQTT Offline";b.classList.remove("online");b.classList.add("offline");t.textContent="Offline";}
+const state = {
+    devices: {
+        light: "OFF",
+        fan: "OFF",
+        geyser: "OFF"
+    },
+
+    sensors: {
+        temperature: 0,
+        humidity: 0,
+        gas: "NORMAL",
+        gas_raw: 0
+    }
+};
+
+
+// ===============================
+// GET LATEST STATUS FROM FLASK
+// ===============================
+async function refreshStatus() {
+    try {
+        const response = await fetch(
+            "/api/status?t=" + Date.now(),
+            {
+                method: "GET",
+                cache: "no-store",
+                headers: {
+                    "Cache-Control": "no-cache"
+                }
+            }
+        );
+
+        if (!response.ok) {
+            throw new Error(
+                "Status request failed: HTTP " + response.status
+            );
+        }
+
+        const data = await response.json();
+
+        console.log("Fresh status received:", data);
+
+        // Update device states
+        if (data.devices) {
+            state.devices = {
+                ...state.devices,
+                ...data.devices
+            };
+        }
+
+        // Update sensor values
+        if (data.sensors) {
+            state.sensors = {
+                ...state.sensors,
+                ...data.sensors
+            };
+        }
+
+        updateDashboard();
+
+    } catch (error) {
+        console.error("Status refresh error:", error);
+    }
 }
-function updateDevice(d,v){
- const e=getElement(d+"State");if(!e)return;
- const s=String(v||"OFF").toUpperCase();e.textContent=s;e.classList.remove("on","off");e.classList.add(s==="ON"?"on":"off");
+
+
+// ===============================
+// UPDATE DASHBOARD
+// ===============================
+function updateDashboard() {
+
+    // -------------------------------
+    // TEMPERATURE
+    // -------------------------------
+    const temperatureElement =
+        document.getElementById("temperature");
+
+    if (temperatureElement) {
+        const temperature =
+            Number(state.sensors.temperature);
+
+        if (Number.isFinite(temperature)) {
+            temperatureElement.textContent =
+                temperature.toFixed(1) + " °C";
+        }
+    }
+
+
+    // -------------------------------
+    // HUMIDITY
+    // -------------------------------
+    const humidityElement =
+        document.getElementById("humidity");
+
+    if (humidityElement) {
+        const humidity =
+            Number(state.sensors.humidity);
+
+        if (Number.isFinite(humidity)) {
+            humidityElement.textContent =
+                humidity.toFixed(1) + " %";
+        }
+    }
+
+
+    // -------------------------------
+    // GAS
+    // -------------------------------
+    const gasElement =
+        document.getElementById("gas");
+
+    if (gasElement) {
+        gasElement.textContent =
+            state.sensors.gas || "NORMAL";
+    }
+
+
+    // -------------------------------
+    // GAS RAW VALUE
+    // -------------------------------
+    const gasRawElement =
+        document.getElementById("gas-raw");
+
+    if (gasRawElement) {
+        gasRawElement.textContent =
+            state.sensors.gas_raw ?? 0;
+    }
+
+
+    // -------------------------------
+    // DEVICE STATES
+    // -------------------------------
+    updateDevice(
+        "light",
+        state.devices.light
+    );
+
+    updateDevice(
+        "fan",
+        state.devices.fan
+    );
+
+    updateDevice(
+        "geyser",
+        state.devices.geyser
+    );
 }
-function updateSensors(data){
- if(!data.sensors)return;
- const t=getElement("temperature"),h=getElement("humidity"),g=getElement("gas");
- if(data.sensors.temperature!=null)t.textContent=Number(data.sensors.temperature).toFixed(1)+" °C";
- if(data.sensors.humidity!=null)h.textContent=Number(data.sensors.humidity).toFixed(1)+" %";
- if(data.sensors.gas!=null)g.textContent=String(data.sensors.gas).toUpperCase();
+
+
+// ===============================
+// UPDATE DEVICE DISPLAY
+// ===============================
+function updateDevice(device, status) {
+
+    const value =
+        String(status || "OFF").toUpperCase();
+
+
+    // Device status text
+    const statusElement =
+        document.getElementById(
+            device + "-status"
+        );
+
+    if (statusElement) {
+        statusElement.textContent = value;
+    }
+
+
+    // Device card
+    const card =
+        document.getElementById(
+            device + "-card"
+        );
+
+    if (card) {
+        card.classList.toggle(
+            "device-on",
+            value === "ON"
+        );
+    }
+
+
+    // Optional ON/OFF indicators
+    const indicator =
+        document.getElementById(
+            device + "-indicator"
+        );
+
+    if (indicator) {
+        indicator.textContent =
+            value === "ON" ? "ON" : "OFF";
+    }
 }
-function updateDashboard(data){
- if(!data)return;updateMQTT(data);
- if(data.devices){updateDevice("light",data.devices.light);updateDevice("fan",data.devices.fan);updateDevice("geyser",data.devices.geyser);}
- updateSensors(data);lastData=data;
+
+
+// ===============================
+// CONTROL LIGHT / FAN / GEYSER
+// ===============================
+async function controlDevice(
+    device,
+    action
+) {
+
+    try {
+
+        console.log(
+            "Sending command:",
+            device,
+            action
+        );
+
+
+        const response = await fetch(
+            "/api/device/" +
+            encodeURIComponent(device) +
+            "/" +
+            encodeURIComponent(action),
+            {
+                method: "POST",
+                cache: "no-store",
+                headers: {
+                    "Cache-Control": "no-cache"
+                }
+            }
+        );
+
+
+        const result =
+            await response.json();
+
+        console.log(
+            "Command response:",
+            result
+        );
+
+
+        if (!response.ok) {
+            throw new Error(
+                result.error ||
+                "Command failed"
+            );
+        }
+
+
+        // Show requested state immediately
+        state.devices[device] =
+            action.toUpperCase();
+
+        updateDashboard();
+
+
+        // Ask Flask for actual ESP32 status
+        setTimeout(
+            refreshStatus,
+            1000
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Control error:",
+            error
+        );
+
+    }
 }
-async function fetchStatus(){
- try{
-  const r=await fetch("/api/status?t="+Date.now(),{cache:"no-store",headers:{"Cache-Control":"no-cache"}});
-  if(!r.ok)return;updateDashboard(await r.json());
- }catch(e){console.error("Dashboard update error:",e);}
-}
-async function controlDevice(device,action){
- showMessage("Sending "+action+" command to "+device+"...","sending");
- try{
-  const r=await fetch("/api/device/"+encodeURIComponent(device)+"/"+encodeURIComponent(action)+"?t="+Date.now(),
-    {method:"POST",cache:"no-store",headers:{"Cache-Control":"no-cache"}});
-  let d={};try{d=await r.json();}catch(e){}
-  if(!r.ok||!d.success){showMessage("Error: "+(d.error||"Command failed"),"error");return;}
-  showMessage(device.toUpperCase()+" → "+action+" command sent","success");
-  await fetchStatus();
-  setTimeout(()=>showMessage(""),2500);
- }catch(e){console.error(e);showMessage("Connection error","error");}
-}
-document.addEventListener("DOMContentLoaded",()=>{fetchStatus();setInterval(fetchStatus,2000);});
+
+
+// ===============================
+// INITIAL LOAD
+// ===============================
+refreshStatus();
+
+
+// ===============================
+// REFRESH EVERY 5 SECONDS
+// ===============================
+setInterval(
+    refreshStatus,
+    5000
+);
