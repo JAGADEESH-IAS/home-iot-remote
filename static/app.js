@@ -6,9 +6,9 @@ const state = {
     },
 
     sensors: {
-        temperature: 0,
-        humidity: 0,
-        gas: "NORMAL",
+        temperature: null,
+        humidity: null,
+        gas: "UNKNOWN",
         gas_raw: 0
     },
 
@@ -19,7 +19,7 @@ const state = {
 
 
 /* =========================================================
-   REFRESH STATUS FROM FLASK
+   REFRESH STATUS
    ========================================================= */
 
 async function refreshStatus() {
@@ -40,23 +40,26 @@ async function refreshStatus() {
 
 
         if (!response.ok) {
+
             throw new Error(
-                "Status request failed: HTTP " +
-                response.status
+                "HTTP " + response.status
             );
         }
 
 
-        const data = await response.json();
+        const data =
+            await response.json();
 
 
         console.log(
-            "Fresh status received:",
+            "STATUS:",
             data
         );
 
 
-        /* DEVICE STATUS */
+        /* -------------------------
+           DEVICES
+           ------------------------- */
 
         if (data.devices) {
 
@@ -67,7 +70,9 @@ async function refreshStatus() {
         }
 
 
-        /* SENSOR STATUS */
+        /* -------------------------
+           SENSORS
+           ------------------------- */
 
         if (data.sensors) {
 
@@ -78,7 +83,9 @@ async function refreshStatus() {
         }
 
 
-        /* MQTT STATUS */
+        /* -------------------------
+           MQTT
+           ------------------------- */
 
         if (data.mqtt) {
 
@@ -95,15 +102,10 @@ async function refreshStatus() {
     } catch (error) {
 
         console.error(
-            "Status refresh error:",
+            "STATUS ERROR:",
             error
         );
 
-
-        /*
-         * If Flask cannot be reached,
-         * show MQTT as offline.
-         */
 
         state.mqtt.connected = false;
 
@@ -113,7 +115,7 @@ async function refreshStatus() {
 
 
 /* =========================================================
-   UPDATE DASHBOARD
+   DASHBOARD
    ========================================================= */
 
 function updateDashboard() {
@@ -153,43 +155,36 @@ function updateMQTTStatus() {
         state.mqtt.connected === true;
 
 
-    console.log(
-        "MQTT status:",
-        connected
-            ? "CONNECTED"
-            : "OFFLINE"
-    );
-
-
-    /* -------------------------
-       Top MQTT badge
-       ------------------------- */
-
-    const mqttBadge =
+    const badge =
         document.getElementById(
             "mqttBadge"
         );
 
 
-    if (mqttBadge) {
+    const text =
+        document.getElementById(
+            "mqttText"
+        );
 
-        mqttBadge.textContent =
+
+    if (badge) {
+
+        badge.textContent =
             connected
                 ? "● MQTT Connected"
                 : "● MQTT Offline";
 
 
-        mqttBadge.classList.remove(
+        badge.classList.remove(
             "offline"
         );
 
-
-        mqttBadge.classList.remove(
+        badge.classList.remove(
             "online"
         );
 
 
-        mqttBadge.classList.add(
+        badge.classList.add(
             connected
                 ? "online"
                 : "offline"
@@ -197,23 +192,21 @@ function updateMQTTStatus() {
     }
 
 
-    /* -------------------------
-       Monitoring MQTT card
-       ------------------------- */
+    if (text) {
 
-    const mqttText =
-        document.getElementById(
-            "mqttText"
-        );
-
-
-    if (mqttText) {
-
-        mqttText.textContent =
+        text.textContent =
             connected
                 ? "Connected"
                 : "Offline";
     }
+
+
+    console.log(
+        "MQTT:",
+        connected
+            ? "CONNECTED"
+            : "OFFLINE"
+    );
 }
 
 
@@ -234,16 +227,16 @@ function updateTemperature() {
     }
 
 
-    const temperature =
+    const value =
         Number(
             state.sensors.temperature
         );
 
 
-    if (Number.isFinite(temperature)) {
+    if (Number.isFinite(value)) {
 
         element.textContent =
-            temperature.toFixed(1) +
+            value.toFixed(1) +
             " °C";
     }
 }
@@ -266,16 +259,16 @@ function updateHumidity() {
     }
 
 
-    const humidity =
+    const value =
         Number(
             state.sensors.humidity
         );
 
 
-    if (Number.isFinite(humidity)) {
+    if (Number.isFinite(value)) {
 
         element.textContent =
-            humidity.toFixed(1) +
+            value.toFixed(1) +
             " %";
     }
 }
@@ -287,17 +280,17 @@ function updateHumidity() {
 
 function updateGas() {
 
-    const gasElement =
+    const element =
         document.getElementById(
             "gas"
         );
 
 
-    if (gasElement) {
+    if (element) {
 
-        gasElement.textContent =
+        element.textContent =
             state.sensors.gas ||
-            "NORMAL";
+            "UNKNOWN";
     }
 }
 
@@ -317,47 +310,40 @@ function updateDevice(
         ).toUpperCase();
 
 
-    /*
-     * Your HTML uses:
-     *
-     * lightState
-     * fanState
-     * geyserState
-     */
-
-    const stateElement =
+    const element =
         document.getElementById(
             device + "State"
         );
 
 
-    if (stateElement) {
-
-        stateElement.textContent =
-            value;
-
-
-        stateElement.classList.remove(
-            "on"
-        );
-
-
-        stateElement.classList.remove(
-            "off"
-        );
-
-
-        stateElement.classList.add(
-            value === "ON"
-                ? "on"
-                : "off"
-        );
+    if (!element) {
+        return;
     }
+
+
+    element.textContent =
+        value;
+
+
+    element.classList.remove(
+        "on"
+    );
+
+    element.classList.remove(
+        "off"
+    );
+
+
+    element.classList.add(
+        value === "ON"
+            ? "on"
+            : "off"
+    );
 }
 
 
 /* =========================================================
-   CONTROL DEVICE
+   DEVICE CONTROL
    ========================================================= */
 
 async function controlDevice(
@@ -365,18 +351,14 @@ async function controlDevice(
     action
 ) {
 
+    console.log(
+        "COMMAND:",
+        device,
+        action
+    );
+
+
     try {
-
-        console.log(
-            "Sending command:",
-            device,
-            action
-        );
-
-
-        /*
-         * Send command to Flask.
-         */
 
         const response =
             await fetch(
@@ -402,7 +384,7 @@ async function controlDevice(
 
 
         console.log(
-            "Command response:",
+            "COMMAND RESPONSE:",
             result
         );
 
@@ -417,8 +399,7 @@ async function controlDevice(
 
 
         /*
-         * Command accepted by Flask.
-         * Update dashboard immediately.
+         * Update UI immediately.
          */
 
         state.devices[device] =
@@ -431,16 +412,9 @@ async function controlDevice(
         );
 
 
-        console.log(
-            "Command successfully sent:",
-            device,
-            action
-        );
-
-
         /*
-         * Get the actual ESP32 state
-         * one second later.
+         * Ask Flask/ESP32 for the
+         * real state after 1 second.
          */
 
         setTimeout(
@@ -452,13 +426,13 @@ async function controlDevice(
     } catch (error) {
 
         console.error(
-            "Control error:",
+            "CONTROL ERROR:",
             error
         );
 
 
         /*
-         * Restore actual state from ESP32.
+         * Restore actual state.
          */
 
         refreshStatus();
@@ -467,7 +441,7 @@ async function controlDevice(
 
 
 /* =========================================================
-   INITIAL LOAD
+   START
    ========================================================= */
 
 refreshStatus();
