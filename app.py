@@ -46,7 +46,7 @@ STATUS_TOPIC = "home/status"
 
 
 # ============================================================
-# APPLICATION STATE
+# DEVICE STATE
 # ============================================================
 
 device_states = {
@@ -56,6 +56,10 @@ device_states = {
 }
 
 
+# ============================================================
+# SENSOR STATE
+# ============================================================
+
 sensor_data = {
     "temperature": None,
     "humidity": None,
@@ -63,6 +67,10 @@ sensor_data = {
     "gas_raw": None
 }
 
+
+# ============================================================
+# SYSTEM STATE
+# ============================================================
 
 mqtt_connected = False
 last_error = None
@@ -82,7 +90,7 @@ def log(message):
 
 
 # ============================================================
-# STATUS MQTT CALLBACK
+# MQTT CONNECT CALLBACK
 # ============================================================
 
 def on_connect(
@@ -98,7 +106,7 @@ def on_connect(
 
     log("")
     log("========================================")
-    log("STATUS MQTT CONNECT CALLBACK")
+    log("MQTT CONNECT CALLBACK")
     log(f"Reason code: {reason_code}")
     log("========================================")
 
@@ -109,7 +117,7 @@ def on_connect(
 
         mqtt_connection_event.set()
 
-        log("STATUS MQTT CONNECTED")
+        log("MQTT CONNECTED SUCCESSFULLY")
         log(f"Broker: {MQTT_BROKER}")
         log(f"Port: {MQTT_PORT}")
 
@@ -134,8 +142,12 @@ def on_connect(
             f"{reason_code}"
         )
 
-        log("STATUS MQTT CONNECTION FAILED")
+        log("MQTT CONNECTION FAILED")
 
+
+# ============================================================
+# MQTT DISCONNECT CALLBACK
+# ============================================================
 
 def on_disconnect(
     client,
@@ -146,7 +158,6 @@ def on_disconnect(
 ):
 
     global mqtt_connected
-    global last_error
 
     mqtt_connected = False
 
@@ -154,10 +165,14 @@ def on_disconnect(
 
     log("")
     log("========================================")
-    log("STATUS MQTT DISCONNECTED")
+    log("MQTT DISCONNECTED")
     log(f"Reason code: {reason_code}")
     log("========================================")
 
+
+# ============================================================
+# MQTT MESSAGE CALLBACK
+# ============================================================
 
 def on_message(
     client,
@@ -181,8 +196,10 @@ def on_message(
     except Exception as error:
 
         log("")
-        log("STATUS JSON ERROR")
+        log("========================================")
+        log("MQTT STATUS JSON ERROR")
         log(str(error))
+        log("========================================")
 
         return
 
@@ -194,6 +211,10 @@ def on_message(
     log("========================================")
 
     with state_lock:
+
+        # ----------------------------------------------------
+        # DEVICE STATES
+        # ----------------------------------------------------
 
         devices = data.get(
             "devices",
@@ -218,27 +239,40 @@ def on_message(
                 devices["geyser"]
             ).upper()
 
+        # ----------------------------------------------------
+        # SENSOR DATA
+        # ----------------------------------------------------
+
         sensors = data.get(
             "sensors",
             {}
         )
 
-        sensor_data["temperature"] = (
-            sensors.get("temperature")
-        )
+        if "temperature" in sensors:
 
-        sensor_data["humidity"] = (
-            sensors.get("humidity")
-        )
+            sensor_data["temperature"] = (
+                sensors["temperature"]
+            )
 
-        sensor_data["gas"] = sensors.get(
-            "gas",
-            "NORMAL"
-        )
+        if "humidity" in sensors:
 
-        sensor_data["gas_raw"] = (
-            sensors.get("gas_raw")
-        )
+            sensor_data["humidity"] = (
+                sensors["humidity"]
+            )
+
+        if "gas" in sensors:
+
+            sensor_data["gas"] = sensors["gas"]
+
+        if "gas_raw" in sensors:
+
+            sensor_data["gas_raw"] = (
+                sensors["gas_raw"]
+            )
+
+        # ----------------------------------------------------
+        # RECORD TIME
+        # ----------------------------------------------------
 
         last_status_time = time.time()
 
@@ -255,7 +289,7 @@ status_client_id = (
 
 log("")
 log("========================================")
-log("STARTING HOME IOT MQTT STATUS CLIENT")
+log("STARTING HOME IOT MQTT CLIENT")
 log(f"Client ID: {status_client_id}")
 log(f"Broker: {MQTT_BROKER}")
 log(f"Port: {MQTT_PORT}")
@@ -297,7 +331,7 @@ status_client.on_message = on_message
 
 
 # ============================================================
-# START STATUS CLIENT
+# START STATUS MQTT CLIENT
 # ============================================================
 
 def start_status_client():
@@ -308,7 +342,7 @@ def start_status_client():
     try:
 
         log("")
-        log("CONNECTING STATUS CLIENT TO HIVEMQ...")
+        log("CONNECTING TO HIVEMQ...")
 
         result = status_client.connect(
             MQTT_BROKER,
@@ -317,14 +351,14 @@ def start_status_client():
         )
 
         log(
-            f"STATUS CONNECT RETURNED: "
+            f"MQTT CONNECT RETURNED: "
             f"{result}"
         )
 
         status_client.loop_start()
 
         log(
-            "STATUS MQTT NETWORK LOOP STARTED"
+            "MQTT NETWORK LOOP STARTED"
         )
 
         connected = mqtt_connection_event.wait(
@@ -335,7 +369,7 @@ def start_status_client():
 
             log("")
             log("========================================")
-            log("STATUS MQTT CONNECTION CONFIRMED")
+            log("MQTT CONNECTION CONFIRMED")
             log("========================================")
 
         else:
@@ -344,7 +378,7 @@ def start_status_client():
 
             log("")
             log("========================================")
-            log("STATUS MQTT CONNECTION TIMEOUT")
+            log("MQTT CONNECTION TIMEOUT")
             log("========================================")
 
     except Exception as error:
@@ -354,7 +388,7 @@ def start_status_client():
 
         log("")
         log("========================================")
-        log("STATUS MQTT START ERROR")
+        log("MQTT START ERROR")
         log(str(error))
         log("========================================")
 
@@ -363,7 +397,7 @@ start_status_client()
 
 
 # ============================================================
-# ONE-SHOT COMMAND PUBLISHER
+# ONE-SHOT MQTT COMMAND
 # ============================================================
 
 def publish_command(
@@ -374,7 +408,7 @@ def publish_command(
     global last_error
     global last_command
 
-    client_id = (
+    command_client_id = (
         "homeiot-command-" +
         uuid.uuid4().hex[:12]
     )
@@ -384,7 +418,7 @@ def publish_command(
     log("")
     log("########################################")
     log("NEW DEVICE COMMAND")
-    log(f"Client ID: {client_id}")
+    log(f"Client ID: {command_client_id}")
     log(f"Topic: {topic}")
     log(f"Payload: {payload}")
     log("QoS: 0")
@@ -393,12 +427,12 @@ def publish_command(
     try:
 
         # ----------------------------------------------------
-        # CREATE NEW MQTT CLIENT
+        # CREATE FRESH MQTT CLIENT
         # ----------------------------------------------------
 
         command_client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=client_id
+            client_id=command_client_id
         )
 
         command_client.username_pw_set(
@@ -412,7 +446,9 @@ def publish_command(
         # CONNECT
         # ----------------------------------------------------
 
-        log("COMMAND CLIENT CONNECTING...")
+        log(
+            "COMMAND CLIENT CONNECTING..."
+        )
 
         connect_result = command_client.connect(
             MQTT_BROKER,
@@ -426,7 +462,7 @@ def publish_command(
         )
 
         # ----------------------------------------------------
-        # START NETWORK LOOP
+        # NETWORK LOOP
         # ----------------------------------------------------
 
         command_client.loop_start()
@@ -469,7 +505,7 @@ def publish_command(
             return False
 
         # ----------------------------------------------------
-        # PUBLISH
+        # PUBLISH COMMAND
         # ----------------------------------------------------
 
         log(
@@ -503,7 +539,7 @@ def publish_command(
             return False
 
         # ----------------------------------------------------
-        # GIVE MQTT NETWORK LOOP TIME
+        # ALLOW NETWORK LOOP TO SEND
         # ----------------------------------------------------
 
         time.sleep(1)
@@ -577,28 +613,23 @@ def api_status():
 
     with state_lock:
 
-        devices = {
-            "light": device_states["light"],
-            "fan": device_states["fan"],
-            "geyser": device_states["geyser"]
-        }
+        # ----------------------------------------------------
+        # COPY CURRENT VALUES
+        # ----------------------------------------------------
 
-        sensors = {
-            "temperature": sensor_data["temperature"],
-            "humidity": sensor_data["humidity"],
-            "gas": sensor_data["gas"],
-            "gas_raw": sensor_data["gas_raw"]
-        }
+        light = device_states["light"]
+        fan = device_states["fan"]
+        geyser = device_states["geyser"]
+
+        temperature = sensor_data["temperature"]
+        humidity = sensor_data["humidity"]
+        gas = sensor_data["gas"]
+        gas_raw = sensor_data["gas_raw"]
 
         status_time = last_status_time
 
     # --------------------------------------------------------
-    # Consider MQTT online if:
-    #
-    # 1. Background MQTT client is connected, OR
-    # 2. We received ESP32 status very recently.
-    #
-    # This prevents a stale "Offline" badge.
+    # RECENT STATUS CHECK
     # --------------------------------------------------------
 
     recently_received = False
@@ -614,15 +645,69 @@ def api_status():
         recently_received
     )
 
+    # --------------------------------------------------------
+    # IMPORTANT:
+    #
+    # We return BOTH:
+    #
+    # 1. The structured format
+    # 2. The flat format expected by the existing dashboard
+    #
+    # This fixes the OFF / 0.0°C / 0.0% problem without
+    # requiring changes to your existing interface.
+    # --------------------------------------------------------
+
     return jsonify({
+
+        # ----------------------------------------------------
+        # MQTT
+        # ----------------------------------------------------
 
         "mqtt": {
             "connected": online
         },
 
-        "devices": devices,
+        # ----------------------------------------------------
+        # NESTED DEVICE DATA
+        # ----------------------------------------------------
 
-        "sensors": sensors,
+        "devices": {
+            "light": light,
+            "fan": fan,
+            "geyser": geyser
+        },
+
+        # ----------------------------------------------------
+        # NESTED SENSOR DATA
+        # ----------------------------------------------------
+
+        "sensors": {
+            "temperature": temperature,
+            "humidity": humidity,
+            "gas": gas,
+            "gas_raw": gas_raw
+        },
+
+        # ----------------------------------------------------
+        # FLAT DEVICE DATA
+        # ----------------------------------------------------
+
+        "light": light,
+        "fan": fan,
+        "geyser": geyser,
+
+        # ----------------------------------------------------
+        # FLAT SENSOR DATA
+        # ----------------------------------------------------
+
+        "temperature": temperature,
+        "humidity": humidity,
+        "gas": gas,
+        "gas_raw": gas_raw,
+
+        # ----------------------------------------------------
+        # OTHER INFORMATION
+        # ----------------------------------------------------
 
         "last_status_received": status_time,
 
@@ -684,7 +769,7 @@ def control_device(
         }), 400
 
     # --------------------------------------------------------
-    # PUBLISH
+    # PUBLISH COMMAND
     # --------------------------------------------------------
 
     success = publish_command(
@@ -704,9 +789,6 @@ def control_device(
 
     # --------------------------------------------------------
     # SUCCESS
-    #
-    # Actual device state will be updated by ESP32's
-    # home/status message.
     # --------------------------------------------------------
 
     return jsonify({
